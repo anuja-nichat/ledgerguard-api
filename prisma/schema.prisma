@@ -1,0 +1,85 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  VIEWER
+  ANALYST
+  ADMIN
+}
+
+enum UserStatus {
+  ACTIVE
+  INACTIVE
+}
+
+enum RecordType {
+  INCOME
+  EXPENSE
+}
+
+enum AuditAction {
+  CREATE
+  UPDATE
+  DELETE
+  ROLE_CHANGE
+}
+
+enum AuditResource {
+  USER
+  FINANCIAL_RECORD
+}
+
+model User {
+  id        String            @id @default(cuid())
+  email     String            @unique
+  password  String
+  role      Role              @default(VIEWER)
+  status    UserStatus        @default(INACTIVE)
+  createdAt DateTime          @default(now())
+  updatedAt DateTime          @updatedAt
+  records   FinancialRecord[]
+}
+
+model FinancialRecord {
+  id        String     @id @default(cuid())
+  userId    String
+  user      User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type      RecordType
+  amount    Decimal    @db.Decimal(15, 2)
+  currencyCode   String     @default("INR") @db.VarChar(3)
+  currencySymbol String     @default("₹") @db.VarChar(8)
+  category  String
+  date      DateTime
+  notes     String?
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+  deletedAt DateTime?
+
+  @@index([userId, date])
+  @@index([type, date])
+  @@index([currencyCode, date])
+  @@index([category])
+}
+
+model AuditLog {
+  id             String        @id @default(cuid())
+  action         AuditAction
+  resource       AuditResource
+  resourceId     String
+  actorUserId    String
+  actorEmail     String
+  actorRole      Role
+  beforeSnapshot Json?
+  afterSnapshot  Json?
+  createdAt      DateTime      @default(now())
+
+  @@index([resource, resourceId, createdAt])
+  @@index([actorUserId, createdAt])
+  @@index([action, createdAt])
+}
