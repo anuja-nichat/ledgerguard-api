@@ -9,6 +9,7 @@ import {
   computeTrendSeriesInCurrency,
   convertAmountBetweenDashboardCurrencies,
   dashboardSummaryQuerySchema,
+  getMonthKeyFromSelectionAtOrBeforeNow,
   trendsQuerySchema,
 } from "@/services/dashboard.service";
 
@@ -32,7 +33,6 @@ describe("dashboard summary math", () => {
         { date: new Date("2026-01-11T00:00:00.000Z"), type: RecordType.EXPENSE, amount: 250 },
         { date: new Date("2026-02-08T00:00:00.000Z"), type: RecordType.EXPENSE, amount: 100 },
       ],
-      "month",
     );
 
     expect(trend).toEqual([
@@ -100,7 +100,6 @@ describe("dashboard summary math", () => {
           currencyCode: "USD",
         },
       ],
-      "month",
       "USD",
     );
 
@@ -116,7 +115,7 @@ describe("dashboard summary math", () => {
       targetCurrencyCode: "inr",
     });
     const trendQuery = trendsQuerySchema.parse({
-      bucket: "month",
+      selection: "APR",
       currencyCode: "inr",
       targetCurrencyCode: "usd",
     });
@@ -125,6 +124,46 @@ describe("dashboard summary math", () => {
     expect(summaryQuery.targetCurrencyCode).toBe("INR");
     expect(trendQuery.currencyCode).toBe("INR");
     expect(trendQuery.targetCurrencyCode).toBe("USD");
+    expect(trendQuery.selection).toBe("apr");
+  });
+
+  it("maps future month selection to previous year", () => {
+    const monthKey = getMonthKeyFromSelectionAtOrBeforeNow(
+      "dec",
+      new Date("2026-04-06T00:00:00.000Z"),
+    );
+
+    expect(monthKey).toBe("2025-12");
+  });
+
+  it("keeps current year for current and past month selections", () => {
+    const now = new Date("2026-04-06T00:00:00.000Z");
+
+    expect(getMonthKeyFromSelectionAtOrBeforeNow("apr", now)).toBe("2026-04");
+    expect(getMonthKeyFromSelectionAtOrBeforeNow("jan", now)).toBe("2026-01");
+  });
+
+  it("rejects removed legacy trends keys", () => {
+    expect(() =>
+      trendsQuerySchema.parse({
+        selection: "apr",
+        view: "month",
+      }),
+    ).toThrow();
+
+    expect(() =>
+      trendsQuerySchema.parse({
+        selection: "apr",
+        month: "2026-04",
+      }),
+    ).toThrow();
+
+    expect(() =>
+      trendsQuerySchema.parse({
+        selection: "apr",
+        bucket: "month",
+      }),
+    ).toThrow();
   });
 });
 

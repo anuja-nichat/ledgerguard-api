@@ -582,12 +582,18 @@ const baseOpenApiDocument: Omit<OpenApiDocument, "servers"> = {
     "/api/dashboard/trends": {
       get: {
         tags: ["dashboard"],
-        summary: "Get weekly or monthly trend insights in a target currency",
+        summary: "Get month-wise trend insight via a single dropdown selection",
         security: [{ bearerAuth: [] }],
         parameters: [
-          { name: "bucket", in: "query", schema: { type: "string", enum: ["week", "month"], default: "month" } },
-          { name: "startDate", in: "query", schema: { type: "string", format: "date-time" } },
-          { name: "endDate", in: "query", schema: { type: "string", format: "date-time" } },
+          {
+            name: "selection",
+            in: "query",
+            schema: {
+              type: "string",
+              enum: ["overall", "jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"],
+              default: "overall",
+            },
+          },
           { name: "userId", in: "query", schema: { type: "string" } },
           {
             name: "currencyCode",

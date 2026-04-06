@@ -1,12 +1,21 @@
 import type { INestApplication } from "@nestjs/common";
 import { Test } from "@nestjs/testing";
-import { afterAll, beforeAll, describe, expect, it, jest } from "@jest/globals";
+import { Prisma, RecordType } from "@prisma/client";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, jest } from "@jest/globals";
 import request from "supertest";
+
+jest.mock("@/data/dashboard.repo", () => ({
+  aggregateCategoryTotals: jest.fn(),
+  aggregateTotalsByType: jest.fn(),
+  listRecentActivity: jest.fn(),
+  listTrendRecords: jest.fn(),
+}));
 
 import { AppModule } from "@/nest/app.module";
 import { ApiExceptionFilter } from "@/nest/common/api-exception.filter";
 import { AuthContextGuard } from "@/nest/common/auth-context.guard";
 import { ResponseEnvelopeInterceptor } from "@/nest/common/response-envelope.interceptor";
+import { listTrendRecords } from "@/data/dashboard.repo";
 import * as DashboardService from "@/services/dashboard.service";
 import type { AuthContext } from "@/types/auth";
 
@@ -21,6 +30,26 @@ describe("api integration routes", () => {
   };
 
   const dashboardSummarySpy = jest.spyOn(DashboardService, "getDashboardSummaryForContext");
+  const mockedListTrendRecords = jest.mocked(listTrendRecords);
+
+  const withAuthRole = async (role: AuthContext["role"], callback: () => Promise<void>) => {
+    const previousRole = authContext.role;
+    authContext.role = role;
+
+    try {
+      await callback();
+    } finally {
+      authContext.role = previousRole;
+    }
+  };
+
+  beforeEach(() => {
+    mockedListTrendRecords.mockReset();
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+  });
 
   beforeAll(async () => {
     dashboardSummarySpy.mockResolvedValue({
@@ -130,5 +159,90 @@ describe("api integration routes", () => {
       netBalance: 1500,
     });
     expect(dashboardSummarySpy).toHaveBeenCalled();
+  });
+
+  it("returns current-month trend metadata for an ongoing month selection", async () => {
+    jest.useFakeTimers();
+    jest.setSystemTime(new Date("2026-04-06T12:00:00.000Z"));
+
+    mockedListTrendRecords.mockResolvedValue([
+      {
+        date: new Date("2026-01-15T00:00:00.000Z"),
+        type: RecordType.INCOME,
+        amount: new Prisma.Decimal(1000),
+        currencyCode: "INR",
+      },
+      {
+        date: new Date("2026-04-05T00:00:00.000Z"),
+        type: RecordType.EXPENSE,
+        amount: new Prisma.Decimal(200),
+        currencyCode: "INR",
+      },
+      {
+        date: new Date("2026-04-06T08:00:00.000Z"),
+        type: RecordType.INCOME,
+        amount: new Prisma.Decimal(50),
+        currencyCode: "INR",
+      },
+    ]);
+
+    await withAuthRole("ANALYST", async () => {
+      const response = await request(app.getHttpServer())
+        .get("/api/dashboard/trends")
+        .query({ selection: "apr" })
+        .expect(200);
+
+      expect(response.body.success).toBe(true);
+      expect(response.body.data.selectedOption).toBe("apr");
+      expect(response.body.data.selectedMonth).toBe("2026-04");
+      expect(response.body.data.trends[0].asOfDate).toBe("2026-04-06");
+      expect(response.body.data.options).toBeUndefined();
+      expect(response.body.data.period).toBeUndefined();
+
+      const scope = mockedListTrendRecords.mock.calls[0]?.[0];
+      expect(scope?.userId).toBe(authContext.userId);
+      expect(scope?.endDate?.toISOString()).toBe("2026-04-06T12:00:00.000Z");
+    });
+  });
+
+  it("returns completed-month trend metadata with month-end cutoff", async () => {
+    jest.useFakeTimers();
+    jest.setSystemTime(new Date("2026-04-06T12:00:00.000Z"));
+
+    mockedListTrendRecords.mockResolvedValue([
+      {
+        date: new Date("2026-01-10T00:00:00.000Z"),
+        type: RecordType.INCOME,
+        amount: new Prisma.Decimal(500),
+        currencyCode: "INR",
+      },
+      {
+        date: new Date("2026-01-28T00:00:00.000Z"),
+        type: RecordType.EXPENSE,
+        amount: new Prisma.Decimal(100),
+        currencyCode: "INR",
+      },
+      {
+        date: new Date("2026-02-01T00:00:00.000Z"),
+        type: RecordType.EXPENSE,
+        amount: new Prisma.Decimal(75),
+        currencyCode: "INR",
+      },
+    ]);
+
+    await withAuthRole("ANALYST", async () => {
+      const response = await request(app.getHttpServer())
+        .get("/api/dashboard/trends")
+        .query({ selection: "jan" })
+        .expect(200);
+
+      expect(response.body.success).toBe(true);
+      expect(response.body.data.selectedOption).toBe("jan");
+      expect(response.body.data.selectedMonth).toBe("2026-01");
+      expect(response.body.data.trends[0].asOfDate).toBe("2026-01-31");
+      expect(response.body.data.trends[0].bucket).toBe("2026-01");
+      expect(response.body.data.options).toBeUndefined();
+      expect(response.body.data.period).toBeUndefined();
+    });
   });
 });

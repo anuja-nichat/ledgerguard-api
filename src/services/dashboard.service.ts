@@ -17,10 +17,59 @@ const dateStringSchema = z.string().refine((value) => !Number.isNaN(Date.parse(v
   message: "Must be a valid date string",
 });
 
-const bucketSchema = z.preprocess(
-  (value) => (typeof value === "string" ? value.toLowerCase() : value),
-  z.enum(["week", "month"]),
+const MONTH_SELECTION_VALUES = [
+  "overall",
+  "jan",
+  "feb",
+  "mar",
+  "apr",
+  "may",
+  "jun",
+  "jul",
+  "aug",
+  "sep",
+  "oct",
+  "nov",
+  "dec",
+] as const;
+
+const trendSelectionSchema = z.preprocess(
+  (value) => (typeof value === "string" ? value.trim().toLowerCase() : value),
+  z.enum(MONTH_SELECTION_VALUES),
 );
+
+type MonthSelection = Exclude<z.infer<typeof trendSelectionSchema>, "overall">;
+
+const MONTH_SELECTION_TO_NUMBER: Record<MonthSelection, number> = {
+  jan: 1,
+  feb: 2,
+  mar: 3,
+  apr: 4,
+  may: 5,
+  jun: 6,
+  jul: 7,
+  aug: 8,
+  sep: 9,
+  oct: 10,
+  nov: 11,
+  dec: 12,
+};
+
+const TREND_DROPDOWN_OPTIONS = [
+  { value: "overall", label: "Overall" },
+  { value: "jan", label: "Jan" },
+  { value: "feb", label: "Feb" },
+  { value: "mar", label: "Mar" },
+  { value: "apr", label: "Apr" },
+  { value: "may", label: "May" },
+  { value: "jun", label: "Jun" },
+  { value: "jul", label: "Jul" },
+  { value: "aug", label: "Aug" },
+  { value: "sep", label: "Sep" },
+  { value: "oct", label: "Oct" },
+  { value: "nov", label: "Nov" },
+  { value: "dec", label: "Dec" },
+] as const;
 
 const dashboardCurrencyCodeSchema = z.preprocess(
   (value) => (typeof value === "string" ? value.trim().toUpperCase() : value),
@@ -85,28 +134,12 @@ export const recentActivityQuerySchema = z
 
 export const trendsQuerySchema = z
   .object({
-    bucket: bucketSchema.default("month"),
-    startDate: dateStringSchema.optional(),
-    endDate: dateStringSchema.optional(),
+    selection: trendSelectionSchema.optional(),
     userId: z.string().cuid().optional(),
     currencyCode: dashboardCurrencyCodeSchema.optional(),
     targetCurrencyCode: dashboardCurrencyCodeSchema.optional().default("INR"),
   })
-  .refine(
-    (value) => {
-      if (!value.startDate || !value.endDate) {
-        return true;
-      }
-
-      return new Date(value.startDate) <= new Date(value.endDate);
-    },
-    {
-      message: "startDate must be before or equal to endDate",
-      path: ["startDate"],
-    },
-  );
-
-export type TrendBucket = z.infer<typeof bucketSchema>;
+  .strict();
 
 type SummaryTypeTotalInput = {
   type: RecordType;
@@ -226,16 +259,7 @@ function toMonthBucket(date: Date): string {
   return `${year}-${month}`;
 }
 
-function toWeekBucket(date: Date): string {
-  const utcDate = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
-  const dayOfWeek = utcDate.getUTCDay();
-  const mondayOffset = dayOfWeek === 0 ? -6 : 1 - dayOfWeek;
-
-  utcDate.setUTCDate(utcDate.getUTCDate() + mondayOffset);
-  return utcDate.toISOString().slice(0, 10);
-}
-
-export function computeTrendSeries(records: TrendPointInput[], bucket: TrendBucket) {
+export function computeTrendSeries(records: TrendPointInput[]) {
   const aggregates = new Map<
     string,
     {
@@ -245,7 +269,7 @@ export function computeTrendSeries(records: TrendPointInput[], bucket: TrendBuck
   >();
 
   for (const record of records) {
-    const bucketKey = bucket === "month" ? toMonthBucket(record.date) : toWeekBucket(record.date);
+    const bucketKey = toMonthBucket(record.date);
 
     const current = aggregates.get(bucketKey) ?? { income: 0, expense: 0 };
     if (record.type === RecordType.INCOME) {
@@ -269,7 +293,6 @@ export function computeTrendSeries(records: TrendPointInput[], bucket: TrendBuck
 
 export function computeTrendSeriesInCurrency(
   records: TrendCurrencyPointInput[],
-  bucket: TrendBucket,
   targetCurrencyCode: DashboardCurrencyCode,
 ) {
   const convertedRecords = records.map((record) => ({
@@ -282,12 +305,110 @@ export function computeTrendSeriesInCurrency(
     ),
   }));
 
-  return computeTrendSeries(convertedRecords, bucket).map((point) => ({
+  return computeTrendSeries(convertedRecords).map((point) => ({
     ...point,
     income: roundCurrencyAmount(point.income),
     expense: roundCurrencyAmount(point.expense),
     net: roundCurrencyAmount(point.net),
   }));
+}
+
+type TrendPoint = {
+  bucket: string;
+  income: number;
+  expense: number;
+  net: number;
+  asOfDate: string;
+};
+
+function getCurrentUtcMonthKey(now: Date): string {
+  return toMonthBucket(now);
+}
+
+export function getMonthKeyFromSelectionAtOrBeforeNow(monthSelection: MonthSelection, now: Date): string {
+  const monthNumber = MONTH_SELECTION_TO_NUMBER[monthSelection];
+  const currentYear = now.getUTCFullYear();
+  const currentMonthNumber = now.getUTCMonth() + 1;
+  const resolvedYear = monthNumber > currentMonthNumber ? currentYear - 1 : currentYear;
+
+  return `${resolvedYear}-${`${monthNumber}`.padStart(2, "0")}`;
+}
+
+function getUtcMonthStart(monthKey: string): Date {
+  const [yearRaw, monthRaw] = monthKey.split("-");
+  const year = Number(yearRaw);
+  const month = Number(monthRaw);
+
+  return new Date(Date.UTC(year, month - 1, 1, 0, 0, 0, 0));
+}
+
+function getUtcMonthEnd(monthKey: string): Date {
+  const start = getUtcMonthStart(monthKey);
+  return new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth() + 1, 0, 23, 59, 59, 999));
+}
+
+function computeSingleTrendPoint(
+  records: TrendCurrencyPointInput[],
+  bucket: string,
+  cutoffDate: Date,
+  targetCurrencyCode: DashboardCurrencyCode,
+): TrendPoint {
+  const summary = computeSummaryFromTypeTotals(
+    records.map((record) => ({
+      type: record.type,
+      amount: convertAmountBetweenDashboardCurrencies(
+        record.amount,
+        record.currencyCode,
+        targetCurrencyCode,
+      ),
+    })),
+  );
+
+  return {
+    bucket,
+    income: roundCurrencyAmount(summary.totalIncome),
+    expense: roundCurrencyAmount(summary.totalExpenses),
+    net: roundCurrencyAmount(summary.netBalance),
+    asOfDate: cutoffDate.toISOString().slice(0, 10),
+  };
+}
+
+function buildTrendDropdownOptions() {
+  return TREND_DROPDOWN_OPTIONS.map((option) => ({
+    value: option.value,
+    label: option.label,
+  }));
+}
+
+function resolveTrendSelection(
+  query: z.infer<typeof trendsQuerySchema>,
+  now: Date,
+): {
+  view: "overall" | "month";
+  selectedOption: z.infer<typeof trendSelectionSchema>;
+  selectedMonth: string | null;
+} {
+  if (query.selection) {
+    if (query.selection === "overall") {
+      return {
+        view: "overall",
+        selectedOption: "overall",
+        selectedMonth: null,
+      };
+    }
+
+    return {
+      view: "month",
+      selectedOption: query.selection,
+      selectedMonth: getMonthKeyFromSelectionAtOrBeforeNow(query.selection, now),
+    };
+  }
+
+  return {
+    view: "overall",
+    selectedOption: "overall",
+    selectedMonth: null,
+  };
 }
 
 function resolveScopedUserId(context: AuthContext, requestedUserId?: string) {
@@ -430,36 +551,69 @@ export async function getTrendsForContext(context: AuthContext, rawQuery: unknow
 
   const query = parseWithSchema(trendsQuerySchema, rawQuery, "Dashboard trend query parameters are invalid");
   const scopedUserId = resolveScopedUserId(context, query.userId);
-  const dateRange = parseDateRange(query);
+  const now = new Date();
 
-  const records = await listTrendRecords({
+  const allRecords = await listTrendRecords({
     userId: scopedUserId,
-    startDate: dateRange.startDate,
-    endDate: dateRange.endDate,
+    endDate: now,
     currencyCode: query.currencyCode,
   });
 
-  const trendSeries = computeTrendSeriesInCurrency(
-    records.map((record) => ({
-      date: record.date,
-      type: record.type,
-      amount: decimalToNumber(record.amount),
-      currencyCode: toDashboardCurrencyCode(record.currencyCode),
-    })),
-    query.bucket,
+  const normalizedRecords = allRecords.map((record) => ({
+    date: record.date,
+    type: record.type,
+    amount: decimalToNumber(record.amount),
+    currencyCode: toDashboardCurrencyCode(record.currencyCode),
+  }));
+
+  const trendSelection = resolveTrendSelection(query, now);
+
+  if (trendSelection.view === "overall") {
+    const trendPoint = computeSingleTrendPoint(normalizedRecords, "overall", now, query.targetCurrencyCode);
+
+    return {
+      bucket: "month",
+      view: "overall",
+      selectedMonth: null,
+      selectedOption: "overall",
+      trends: [trendPoint],
+      options: buildTrendDropdownOptions(),
+      currency: {
+        code: query.targetCurrencyCode,
+        symbol: DASHBOARD_CURRENCY_SYMBOLS[query.targetCurrencyCode],
+      },
+      period: {
+        startDate: allRecords[0]?.date.toISOString() ?? null,
+        endDate: now.toISOString(),
+      },
+    };
+  }
+
+  const selectedMonth = trendSelection.selectedMonth ?? getCurrentUtcMonthKey(now);
+
+  const monthStart = getUtcMonthStart(selectedMonth);
+  const monthEnd = getUtcMonthEnd(selectedMonth);
+  const cutoffDate = selectedMonth === getCurrentUtcMonthKey(now) ? now : monthEnd;
+  const monthRecords = normalizedRecords.filter(
+    (record) => record.date >= monthStart && record.date <= cutoffDate,
+  );
+
+  const trendPoint = computeSingleTrendPoint(
+    monthRecords,
+    selectedMonth,
+    cutoffDate,
     query.targetCurrencyCode,
   );
 
   return {
-    bucket: query.bucket,
-    trends: trendSeries,
+    bucket: "month",
+    view: "month",
+    selectedMonth,
+    selectedOption: trendSelection.selectedOption,
+    trends: [trendPoint],
     currency: {
       code: query.targetCurrencyCode,
       symbol: DASHBOARD_CURRENCY_SYMBOLS[query.targetCurrencyCode],
-    },
-    period: {
-      startDate: query.startDate ?? null,
-      endDate: query.endDate ?? null,
     },
   };
 }
